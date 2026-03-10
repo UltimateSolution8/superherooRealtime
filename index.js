@@ -141,7 +141,8 @@ sub.subscribe(REDIS_CHANNEL, (err) => {
 sub.on('message', (_channel, message) => {
   try {
     const evt = JSON.parse(message);
-    const type = evt.type;
+    const rawType = evt.type || '';
+    const type = rawType.toUpperCase().replace(/\./g, '_');
     const payload = evt.payload || {};
 
     if (type === 'TASK_OFFERED') {
@@ -166,14 +167,15 @@ sub.on('message', (_channel, message) => {
     }
 
     if (type === 'TASK_ASSIGNED' || type === 'TASK_STATUS_CHANGED') {
+      const emitType = type.toLowerCase().replace(/_/g, '.');
       if (payload.buyerId) {
-        io.to(`user:${payload.buyerId}`).emit(type.toLowerCase(), payload);
+        io.to(`user:${payload.buyerId}`).emit(emitType, payload);
       }
       if (payload.helperId) {
-        io.to(`user:${payload.helperId}`).emit(type.toLowerCase(), payload);
+        io.to(`user:${payload.helperId}`).emit(emitType, payload);
       }
       if (payload.taskId) {
-        io.to(`task:${payload.taskId}`).emit(type.toLowerCase(), payload);
+        io.to(`task:${payload.taskId}`).emit(emitType, payload);
       }
       if (type === 'TASK_ASSIGNED' && payload.helperId) {
         helperAssignments.set(payload.helperId, { taskId: payload.taskId, buyerId: payload.buyerId });
