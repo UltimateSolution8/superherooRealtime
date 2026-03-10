@@ -151,7 +151,21 @@ sub.on('message', (_channel, message) => {
       return;
     }
 
-    if (type === 'TASK_ASSIGNED' || type === 'TASK_STATUS_CHANGED' || type === 'TASK_CREATED') {
+    if (type === 'TASK_CREATED') {
+      // Broadcast to all connected helpers so they can refresh available tasks
+      for (const [, socket] of io.sockets.sockets) {
+        if (socket.data.role === 'HELPER') {
+          socket.emit('task_created', payload);
+        }
+      }
+      // Also notify the buyer who created the task
+      if (payload.buyerId) {
+        io.to(`user:${payload.buyerId}`).emit('task_created', payload);
+      }
+      return;
+    }
+
+    if (type === 'TASK_ASSIGNED' || type === 'TASK_STATUS_CHANGED') {
       if (payload.buyerId) {
         io.to(`user:${payload.buyerId}`).emit(type.toLowerCase(), payload);
       }
