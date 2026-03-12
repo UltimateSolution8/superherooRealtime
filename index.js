@@ -159,10 +159,8 @@ sub.on('message', (_channel, message) => {
           socket.emit('task_created', payload);
         }
       }
-      // Also notify the buyer who created the task
-      if (payload.buyerId) {
-        io.to(`user:${payload.buyerId}`).emit('task_created', payload);
-      }
+      // buyers don't need the "task_created" socket event, it only clutters
+      // their client and was blamed for earlier notification bugs.
       return;
     }
 
