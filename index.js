@@ -165,15 +165,20 @@ sub.on('message', (_channel, message) => {
     }
 
     if (type === 'TASK_ASSIGNED' || type === 'TASK_STATUS_CHANGED') {
-      const emitType = type.toLowerCase().replace(/_/g, '.');
+      const dotType = type.toLowerCase().replace(/_/g, '.');
+      const snakeType = type.toLowerCase();
+      const emitToTargets = (room) => {
+        io.to(room).emit(dotType, payload);
+        io.to(room).emit(snakeType, payload);
+      };
       if (payload.buyerId) {
-        io.to(`user:${payload.buyerId}`).emit(emitType, payload);
+        emitToTargets(`user:${payload.buyerId}`);
       }
       if (payload.helperId) {
-        io.to(`user:${payload.helperId}`).emit(emitType, payload);
+        emitToTargets(`user:${payload.helperId}`);
       }
       if (payload.taskId) {
-        io.to(`task:${payload.taskId}`).emit(emitType, payload);
+        emitToTargets(`task:${payload.taskId}`);
       }
       if (type === 'TASK_ASSIGNED' && payload.helperId) {
         helperAssignments.set(payload.helperId, { taskId: payload.taskId, buyerId: payload.buyerId });
