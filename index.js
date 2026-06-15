@@ -25,9 +25,10 @@ const JWT_ACCESS_SECRET = requiredEnv('JWT_ACCESS_SECRET');
 const JWT_KEY = deriveHmacKey(JWT_ACCESS_SECRET);
 const H3_RESOLUTION = Number(process.env.MATCH_H3_RESOLUTION || 9);
 const REDIS_CHANNEL = process.env.REALTIME_REDIS_CHANNEL || 'him:rt:events';
+const INTERNAL_SECRET = process.env.REALTIME_INTERNAL_SECRET || '';
 
 const app = express();
-app.get('/health', (_req, res) => res.json({ ok: true }));
+app.use(express.json({ limit: '256kb' }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -40,6 +41,123 @@ const io = new Server(server, {
 const redis = new Redis(REDIS_URL);
 const sub = new Redis(REDIS_URL);
 const helperAssignments = new Map();
+const recentEventIds = new Map();
+let lastEventAt = null;
+let lastEventType = null;
+let redisSubHealthy = false;
+
+function trimRecentEvents() {
+  const now = Date.now();
+  for (const [id, expiresAt] of recentEventIds.entries()) {
+    if (expiresAt <= now) {
+      recentEventIds.delete(id);
+    }
+  }
+}
+
+setInterval(trimRecentEvents, 30_000).unref();
+
+function markEventSeen(eventId) {
+  if (!eventId) return false;
+  const now = Date.now();
+  const expiresAt = recentEventIds.get(eventId);
+  if (expiresAt && expiresAt > now) return true;
+  recentEventIds.set(eventId, now + 2 * 60 * 1000);
+  return false;
+}
+
+function emitEvent(evt, source) {
+  if (!evt || typeof evt !== 'object') return;
+
+  const eventId = evt.eventId || null;
+  if (eventId && markEventSeen(eventId)) {
+    return;
+  }
+
+  const rawType = evt.type || '';
+  const type = rawType.toUpperCase().replace(/\./g, '_');
+  const payload = evt.payload || {};
+  lastEventAt = Date.now();
+  lastEventType = type || 'UNKNOWN';
+
+  if (type === 'TASK_OFFERED') {
+    if (payload.helperId) {
+      io.to(`user:${payload.helperId}`).emit('task.offered', payload);
+    }
+    return;
+  }
+
+  if (type === 'TASK_CREATED') {
+    // Broadcast to all connected helpers so they can refresh available tasks
+    for (const [, socket] of io.sockets.sockets) {
+      if (socket.data.role === 'HELPER') {
+        socket.emit('task_created', payload);
+      }
+    }
+    // buyers don't need the "task_created" socket event, it only clutters
+    // their client and was blamed for earlier notification bugs.
+    return;
+  }
+
+  if (type === 'TASK_ASSIGNED' || type === 'TASK_STATUS_CHANGED') {
+    const dotType = type.toLowerCase().replace(/_/g, '.');
+    const snakeType = type.toLowerCase();
+    const emitToTargets = (room) => {
+      io.to(room).emit(dotType, payload);
+      io.to(room).emit(snakeType, payload);
+    };
+    if (payload.buyerId) {
+      emitToTargets(`user:${payload.buyerId}`);
+    }
+    if (payload.helperId) {
+      emitToTargets(`user:${payload.helperId}`);
+    }
+    if (payload.taskId) {
+      emitToTargets(`task:${payload.taskId}`);
+    }
+    if (type === 'TASK_ASSIGNED' && payload.helperId) {
+      helperAssignments.set(payload.helperId, { taskId: payload.taskId, buyerId: payload.buyerId });
+    }
+    if (type === 'TASK_STATUS_CHANGED' && payload.helperId && payload.status) {
+      if (payload.status === 'COMPLETED' || payload.status === 'CANCELLED') {
+        helperAssignments.delete(payload.helperId);
+      }
+    }
+    return;
+  }
+
+  // default: broadcast to task room when available
+  if (payload.taskId) {
+    io.to(`task:${payload.taskId}`).emit(type.toLowerCase(), payload);
+  }
+}
+
+app.get('/health', (_req, res) =>
+  res.json({
+    ok: true,
+    redisSubHealthy,
+    sockets: io.engine.clientsCount,
+    lastEventType,
+    lastEventAt,
+  }),
+);
+
+app.post('/internal/publish', (req, res) => {
+  if (!INTERNAL_SECRET) {
+    return res.status(503).json({ ok: false, code: 'REALTIME_INTERNAL_SECRET_NOT_SET' });
+  }
+  const secret = req.get('x-realtime-secret');
+  if (!secret || secret !== INTERNAL_SECRET) {
+    return res.status(401).json({ ok: false, code: 'UNAUTHORIZED' });
+  }
+  try {
+    emitEvent(req.body, 'http');
+    return res.status(202).json({ ok: true });
+  } catch (err) {
+    console.error('Failed to process /internal/publish event', err);
+    return res.status(400).json({ ok: false, code: 'INVALID_EVENT' });
+  }
+});
 
 io.use((socket, next) => {
   try {
@@ -132,69 +250,27 @@ io.on('connection', (socket) => {
 
 sub.subscribe(REDIS_CHANNEL, (err) => {
   if (err) {
+    redisSubHealthy = false;
     console.error('Failed to subscribe to', REDIS_CHANNEL, err);
-    process.exit(1);
+    return;
   }
+  redisSubHealthy = true;
   console.log('Subscribed to', REDIS_CHANNEL);
+});
+
+sub.on('error', (err) => {
+  redisSubHealthy = false;
+  console.error('Redis subscriber error', err);
+});
+
+redis.on('error', (err) => {
+  console.error('Redis client error', err);
 });
 
 sub.on('message', (_channel, message) => {
   try {
     const evt = JSON.parse(message);
-    const rawType = evt.type || '';
-    const type = rawType.toUpperCase().replace(/\./g, '_');
-    const payload = evt.payload || {};
-
-    if (type === 'TASK_OFFERED') {
-      if (payload.helperId) {
-        io.to(`user:${payload.helperId}`).emit('task.offered', payload);
-      }
-      return;
-    }
-
-    if (type === 'TASK_CREATED') {
-      // Broadcast to all connected helpers so they can refresh available tasks
-      for (const [, socket] of io.sockets.sockets) {
-        if (socket.data.role === 'HELPER') {
-          socket.emit('task_created', payload);
-        }
-      }
-      // buyers don't need the "task_created" socket event, it only clutters
-      // their client and was blamed for earlier notification bugs.
-      return;
-    }
-
-    if (type === 'TASK_ASSIGNED' || type === 'TASK_STATUS_CHANGED') {
-      const dotType = type.toLowerCase().replace(/_/g, '.');
-      const snakeType = type.toLowerCase();
-      const emitToTargets = (room) => {
-        io.to(room).emit(dotType, payload);
-        io.to(room).emit(snakeType, payload);
-      };
-      if (payload.buyerId) {
-        emitToTargets(`user:${payload.buyerId}`);
-      }
-      if (payload.helperId) {
-        emitToTargets(`user:${payload.helperId}`);
-      }
-      if (payload.taskId) {
-        emitToTargets(`task:${payload.taskId}`);
-      }
-      if (type === 'TASK_ASSIGNED' && payload.helperId) {
-        helperAssignments.set(payload.helperId, { taskId: payload.taskId, buyerId: payload.buyerId });
-      }
-      if (type === 'TASK_STATUS_CHANGED' && payload.helperId && payload.status) {
-        if (payload.status === 'COMPLETED' || payload.status === 'CANCELLED') {
-          helperAssignments.delete(payload.helperId);
-        }
-      }
-      return;
-    }
-
-    // default: broadcast to task room when available
-    if (payload.taskId) {
-      io.to(`task:${payload.taskId}`).emit(type.toLowerCase(), payload);
-    }
+    emitEvent(evt, 'redis');
   } catch (_e) {
     // ignore malformed
   }
