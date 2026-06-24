@@ -189,9 +189,28 @@ io.on('connection', (socket) => {
   socket.join(`user:${userId}`);
   socket.emit('ready', { userId, role });
 
-  socket.on('task.subscribe', (msg) => {
+  socket.on('task.subscribe', async (msg) => {
     if (!msg || !msg.taskId) return;
     socket.join(`task:${msg.taskId}`);
+    if (msg.helperId) {
+      try {
+        const stateKey = `him:helper:${msg.helperId}:state`;
+        const [latStr, lngStr, tsStr] = await redis.hmget(stateKey, 'lat', 'lng', 'lastSeenEpochMs');
+        const lat = Number(latStr);
+        const lng = Number(lngStr);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) {
+          socket.emit('helper.location', {
+            taskId: msg.taskId,
+            helperId: msg.helperId,
+            lat,
+            lng,
+            ts: tsStr ? Number(tsStr) : Date.now(),
+          });
+        }
+      } catch (err) {
+        // ignore Redis error
+      }
+    }
   });
 
   socket.on('location.update', async (msg) => {
