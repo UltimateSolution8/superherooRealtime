@@ -80,6 +80,18 @@ function emitEvent(evt, source) {
   lastEventAt = Date.now();
   lastEventType = type || 'UNKNOWN';
 
+  if (type === 'CHAT_MESSAGE_RECEIVED') {
+    if (payload.targetUserId) {
+      io.to(`user:${payload.targetUserId}`).emit('chat_message_received', payload);
+      io.to(`user:${payload.targetUserId}`).emit('chat.message.received', payload);
+    }
+    if (payload.taskId) {
+      io.to(`task:${payload.taskId}`).emit('chat_message_received', payload);
+      io.to(`task:${payload.taskId}`).emit('chat.message.received', payload);
+    }
+    return;
+  }
+
   if (type === 'TASK_OFFERED') {
     if (payload.helperId) {
       io.to(`user:${payload.helperId}`).emit('task.offered', payload);
