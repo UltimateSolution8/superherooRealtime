@@ -92,6 +92,49 @@ function emitEvent(evt, source) {
     return;
   }
 
+  if (type === 'MEDIATOR_JOB_AVAILABLE') {
+    for (const [, socket] of io.sockets.sockets) {
+      if (socket.data.role === 'MEDIATOR' || socket.data.role === 'ADMIN') {
+        socket.emit('mediator.job_available', payload);
+      }
+    }
+    return;
+  }
+
+  if (type === 'MEDIATOR_JOB_ACCEPTED') {
+    if (payload.buyerId) {
+      io.to(`user:${payload.buyerId}`).emit('mediator.job_accepted', payload);
+    }
+    return;
+  }
+
+  if (type === 'MEDIATOR_JOB_DISPATCHED') {
+    if (payload.buyerId) {
+      io.to(`user:${payload.buyerId}`).emit('mediator.job_dispatched', payload);
+    }
+    if (payload.mediatorId) {
+      io.to(`user:${payload.mediatorId}`).emit('mediator.job_dispatched', payload);
+    }
+    return;
+  }
+
+  if (type === 'MEDIATOR_ATTENDANCE_UPDATE') {
+    if (payload.mediatorId) {
+      io.to(`user:${payload.mediatorId}`).emit('mediator.attendance_update', payload);
+    }
+    return;
+  }
+
+  if (type === 'MEDIATOR_JOB_COMPLETED') {
+    if (payload.buyerId) {
+      io.to(`user:${payload.buyerId}`).emit('mediator.job_completed', payload);
+    }
+    if (payload.mediatorId) {
+      io.to(`user:${payload.mediatorId}`).emit('mediator.job_completed', payload);
+    }
+    return;
+  }
+
   if (type === 'TASK_OFFERED') {
     if (payload.helperId) {
       io.to(`user:${payload.helperId}`).emit('task.offered', payload);
