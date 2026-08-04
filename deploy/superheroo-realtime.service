@@ -1,0 +1,23 @@
+[Unit]
+Description=Superheroo realtime Socket.IO gateway
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=superheroo
+Group=superheroo
+WorkingDirectory=/opt/superheroo-realtime/current
+EnvironmentFile=/etc/superheroo/realtime.env
+ExecStart=/usr/local/bin/node index.js
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/superheroo
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
@@ -15,5 +16,11 @@
     "ioredis": "^5.9.3",
     "jsonwebtoken": "^9.0.3",
     "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
+  },
+  "engines": {
+    "node": ">=24 <25"
   }
 }

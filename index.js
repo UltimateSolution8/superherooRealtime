@@ -7,8 +7,8 @@ const Redis = require('ioredis');
 const jwt = require('jsonwebtoken');
 const { latLngToCell } = require('h3-js');
 
-function requiredEnv(name) {
-  const v = process.env[name];
+function requiredEnv(env, name) {
+  const v = env[name];
   if (!v) {
     throw new Error(`Missing env var ${name}`);
   }
@@ -19,13 +19,16 @@ function deriveHmacKey(secret) {
   return crypto.createHash('sha256').update(secret, 'utf8').digest();
 }
 
-const PORT = Number(process.env.PORT || 8090);
-const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const JWT_ACCESS_SECRET = requiredEnv('JWT_ACCESS_SECRET');
+function createRealtimeServer(options = {}) {
+const env = options.env || process.env;
+const PORT = Number(env.PORT || 8090);
+const HOST = env.HOST || '127.0.0.1';
+const REDIS_URL = env.REDIS_URL || 'redis://localhost:6379';
+const JWT_ACCESS_SECRET = requiredEnv(env, 'JWT_ACCESS_SECRET');
 const JWT_KEY = deriveHmacKey(JWT_ACCESS_SECRET);
-const H3_RESOLUTION = Number(process.env.MATCH_H3_RESOLUTION || 9);
-const REDIS_CHANNEL = process.env.REALTIME_REDIS_CHANNEL || 'him:rt:events';
-const INTERNAL_SECRET = process.env.REALTIME_INTERNAL_SECRET || '';
+const H3_RESOLUTION = Number(env.MATCH_H3_RESOLUTION || 9);
+const REDIS_CHANNEL = env.REALTIME_REDIS_CHANNEL || 'him:rt:events';
+const INTERNAL_SECRET = env.REALTIME_INTERNAL_SECRET || '';
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -38,8 +41,8 @@ const io = new Server(server, {
   },
 });
 
-const redis = new Redis(REDIS_URL);
-const sub = new Redis(REDIS_URL);
+const redis = options.redis || new Redis(REDIS_URL);
+const sub = options.sub || new Redis(REDIS_URL);
 const helperAssignments = new Map();
 const recentEventIds = new Map();
 let lastEventAt = null;
@@ -55,7 +58,8 @@ function trimRecentEvents() {
   }
 }
 
-setInterval(trimRecentEvents, 30_000).unref();
+const recentEventsTimer = setInterval(trimRecentEvents, 30_000);
+recentEventsTimer.unref();
 
 function markEventSeen(eventId) {
   if (!eventId) return false;
@@ -98,6 +102,12 @@ function emitEvent(evt, source) {
         socket.emit('mediator.job_available', payload);
       }
     }
+    return;
+  }
+
+  if (type === 'KYC_REQUEST_SUBMITTED') {
+    io.to('admin').emit('kyc.request_submitted', payload);
+    io.to('admin').emit('admin.action_required', { type: 'KYC_REQUEST_SUBMITTED', ...payload });
     return;
   }
 
@@ -242,6 +252,9 @@ io.on('connection', (socket) => {
   const role = socket.data.role;
 
   socket.join(`user:${userId}`);
+  if (role === 'ADMIN' || role === 'KYC' || role === 'SUPPORT') {
+    socket.join('admin');
+  }
   socket.emit('ready', { userId, role });
 
   socket.on('task.subscribe', async (msg) => {
@@ -350,6 +363,34 @@ sub.on('message', (_channel, message) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`helpinminutes-realtime listening on :${PORT}`);
-});
+function start() {
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(PORT, HOST, () => {
+      server.off('error', reject);
+      console.log(`helpinminutes-realtime listening on ${HOST}:${PORT}`);
+      resolve(server.address());
+    });
+  });
+}
+
+async function stop() {
+  clearInterval(recentEventsTimer);
+  await new Promise((resolve) => io.close(resolve));
+  await Promise.allSettled([
+    typeof redis.quit === 'function' ? redis.quit() : Promise.resolve(),
+    typeof sub.quit === 'function' ? sub.quit() : Promise.resolve(),
+  ]);
+}
+
+return { app, server, io, emitEvent, start, stop };
+}
+
+if (require.main === module) {
+  createRealtimeServer().start().catch((err) => {
+    console.error('Failed to start realtime server', err);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { createRealtimeServer, deriveHmacKey };
