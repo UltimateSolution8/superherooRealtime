@@ -12,6 +12,10 @@ EnvironmentFile=/etc/superheroo/realtime.env
 ExecStart=/usr/local/bin/node index.js
 Restart=always
 RestartSec=3
+# The gateway handles SIGTERM and closes sockets cleanly; give it room to do so
+# instead of having connections cut on every deploy.
+KillSignal=SIGTERM
+TimeoutStopSec=20
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
